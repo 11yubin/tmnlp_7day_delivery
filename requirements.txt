@@ -1,0 +1,9 @@
+psycopg2-binary
+python-dotenv
+bs4
+requests
+selenium
+# transformers
+# pandas
+# wordcloud
+# matplotlib
