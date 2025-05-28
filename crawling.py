@@ -8,24 +8,11 @@ from selenium.webdriver.chrome.service import Service
 from webdriver_manager.chrome import ChromeDriverManager
 from selenium.common.exceptions import NoSuchElementException
 import pandas as pd
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 import requests
 from bs4 import BeautifulSoup
 from datetime import datetime
-
-def db_connect():
-    load_dotenv()
-
-    try:
-        conn = psycopg2.connect(
-            host=os.getenv("DB_HOST"),
-            port=os.getenv("DB_PORT"),
-            dbname=os.getenv("DB_NAME"),
-            user=os.getenv("DB_USER"),
-            password=os.getenv("DB_PASSWORD")
-        )
-        print("✅ 연결 성공")
-    except Exception as e:
-        print("❌ 연결 실패:", e)
 
 def crawling():
     query = "7일 배송"
@@ -83,31 +70,36 @@ def crawling():
     news_links.to_csv('links.csv')
     print("✅ get links")
 
-# 더보기 스크롤 -> 댓글 전부 수집하기 위함
+# 댓글 더보기 버튼을 클릭
 def click_all_more_buttons(driver, max_clicks=30):
     click_count = 0
     while click_count < max_clicks:
         try:
-            time.sleep(15)
-
-            driver.find_element(By.XPATH, '//*[@id="cbox_module"]/div[2]/div[9]/a').click()
-            # if more_button.is_displayed():
-            #     driver.execute_script("arguments[0].click();", more_button)
-            #     time.sleep(1.5)
-            #     click_count += 1
-            # else:
-            #     break
-        except NoSuchElementException:
-            # 더보기 버튼 없음: 종료
-            break
+            more_button = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.CLASS_NAME, "u_cbox_btn_more"))
+            )
+            more_button.click()
+            time.sleep(1)
         except Exception as e:
-            # 이외의 오류 발생
             print(e)
+            print("✅ 더보기 없음")
             break
 
-def get_news_info():
-    links = pd.read_csv('./links.csv')
-    link = links['link'][12]
+# 뉴스 정보 저장 with database
+def get_news_info(link):
+    load_dotenv()
+
+    conn = psycopg2.connect(
+        host=os.getenv("DB_HOST"),
+        port=os.getenv("DB_PORT"),
+        dbname=os.getenv("DB_NAME"),
+        user=os.getenv("DB_USER"),
+        password=os.getenv("DB_PASSWORD")
+    )
+    print("✅ 연결 성공")
+
+    cur = conn.cursor()  # 커서 생성
+
     title, content, press, date, comments_link = None, None, None, None, None
 
     # 댓글 수집 -> js라 soup는 안됨
@@ -154,34 +146,56 @@ def get_news_info():
             date_str = date_tag["data-date-time"] if date_tag else None
             date = datetime.strptime(date_str, "%Y-%m-%d %H:%M:%S") if date_str else None
 
-            # 댓글 수집 -> 수정중
+            # 댓글 수집
             driver.get(comments_link)
+
+            click_all_more_buttons(driver)
+
             comments_list = driver.find_elements(By.CSS_SELECTOR, ".u_cbox_contents")
+            # driver.find_element(By.CLASS_NAME, 'u_cbox_btn_more').click()
+            time.sleep(1)
+
+            comments_list_count = len(comments_list)
 
             # 확인 출력
-            print("제목:", title)
-            print("언론사:", press)
-            print("작성일:", date)
-            print("본문:\n", content)
-            print(len(comments_list))
+            print("제목:", title, comments_list_count)
 
-            for c in range (len(comments_list)):
+            cur.execute(
+                "INSERT INTO news (title, content, press, date, comments) VALUES (%s, %s, %s, %s, %s)",
+                (title, content, press, date, comments_list_count)
+            )
+            conn.commit()
+
+
+            for c in range (comments_list_count):
                 comment = comments_list[c].text
+                comment_date_text = driver.find_element(By.XPATH, f'//*[@id="cbox_module_wai_u_cbox_content_wrap_tabpanel"]/ul/li[{c+1}]/div[1]/div/div[3]/span').text
+                comment_date = datetime.strptime(comment_date_text, "%Y.%m.%d. %H:%M")
+
                 like = driver.find_element(By.XPATH, f'//*[@id="cbox_module_wai_u_cbox_content_wrap_tabpanel"]/ul/li[{c+1}]/div[1]/div/div[4]/div/a[1]/em').text
                 print(comment, like)
 
+                cur.execute(
+                    "INSERT INTO comments (content, recommends, date, news_title) VALUES (%s, %s, %s, %s)",
+                    (comment, like, comment_date, title)
+                )
+                conn.commit()
+
                 comments.append([comment, like])
 
-
     except Exception as e:
-        print("댓글 수 없음")
         print(e)
+        print("댓글 수 없음, 수집 종료")
     
 if __name__ == "__main__":
     options = webdriver.ChromeOptions()
-    # options.add_argument("--headless")
+    options.add_argument("--headless")
     driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+    links = pd.read_csv('./links.csv')
 
-    get_news_info()
+    # for link in links['link']:
+    #     get_news_info(link)
+
+    get_news_info(links['link'][13])
 
     driver.quit()
